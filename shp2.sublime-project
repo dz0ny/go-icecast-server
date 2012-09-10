@@ -1,0 +1,13 @@
+{
+	"folders":
+	[
+		{
+			"path": "/home/dz0ny/Namizje/shoutcast-parser-proxy"
+		}
+	],
+	"settings":
+	{
+		"go_project": true,
+		"name": "shp2"
+	}
+}
