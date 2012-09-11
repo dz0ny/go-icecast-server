@@ -64,26 +64,10 @@ func parseOGG(conn net.Conn, req *http.Request) {
 		}
 
 		if n > 0 {
+			packet, error := ogg.NewOggpacket(vorbis[0:])
 
 			//vorbis data packet
-			if bytes.Contains(vorbis[0:4], []byte("OggS")) {
-				packet := new(ogg.OggPacket)
-
-				//http://wiki.xiph.org/Ogg_Skeleton_4
-				//79 103 103 83  | 0-3 header
-				// 0 | 4-5 version
-				// 4 | 5-6 type
-				// 0 48 42 0 - 0 0 0 0 | 6-13 granule
-				// 172 79 0 0 | 14-17 serial_number
-				// 241 0 0 0 | 18-21 sequence
-
-				(*packet).Version = ogg.Varint32(vorbis[4:5])
-				(*packet).Header_type = ogg.Varint32(vorbis[5:6])
-				(*packet).Granule_position = ogg.Varint64(vorbis[6:14])
-				(*packet).Serial_number = ogg.Varint32(vorbis[14:18])
-				(*packet).Sequence = ogg.Varint32(vorbis[18:22])
-				(*packet).Crc = ogg.Varint32(vorbis[22:26])
-				(*packet).Segments = ogg.Varint32(vorbis[26:27])
+			if error == nil {
 
 				if packet.Header_type != 0 || alsoReadNext != 0 {
 
