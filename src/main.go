@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
+	"decoder/ogg"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,8 +11,8 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
+	"utils"
 )
 
 type Audiocast struct {
@@ -24,79 +24,9 @@ type Audiocast struct {
 	Type        string `json:"content-type"`
 }
 
-type OggPacket struct {
-	Version          uint32
-	Header_type      uint32
-	Granule_position uint64
-	Sequence         uint32
-	Serial_number    uint32
-	Crc              uint32
-	Segments         uint32
-}
-
 //max 16 clients
 var povezave = make(map[string]Audiocast, 16)
 var _DEBUGME bool
-
-func checkError(err error) {
-	if err != nil {
-		log.Println("Fatal error: ", err.Error())
-	}
-}
-
-func clean(tag []byte) string {
-	start := bytes.Index(tag, []byte("="))
-	end := len(tag)
-	for i := 0; i < end; i++ {
-		if tag[i] < 32 {
-			end = i
-			//lookahead
-			if tag[i+1] < 32 {
-				break
-			}
-		}
-	}
-	if false {
-		log.Println(tag)
-		log.Println(tag[start+1 : end])
-	}
-	return stringify(tag[start+1 : end])
-}
-
-func stringify(tag []byte) string {
-	data := bytes.NewBuffer(tag[0:])
-
-	return data.String()
-}
-
-func toIfPort(port int) string {
-	service := strconv.AppendInt([]byte(":"), int64(port), 10)
-	return stringify(service)
-}
-
-func varint32(slice []byte) uint32 {
-	number := uint32(slice[0])
-	shift := uint(8)
-
-	for i := 1; i < len(slice); i++ {
-
-		number |= uint32(slice[i]) << shift
-		shift *= 2
-	}
-	return number
-}
-
-func varint64(slice []byte) uint64 {
-	number := uint64(slice[0])
-	shift := uint(8)
-
-	for i := 1; i < len(slice); i++ {
-
-		number |= uint64(slice[i]) << shift
-		shift *= 2
-	}
-	return number
-}
 
 //icecast2 update
 func parseMetadataUpdate(conn net.Conn, req *http.Request) {
@@ -120,6 +50,7 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 	}
 }
 
+//icecast1 update
 func parseOGG(conn net.Conn, req *http.Request) {
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
 	red := bufio.NewReader(conn)
@@ -128,7 +59,7 @@ func parseOGG(conn net.Conn, req *http.Request) {
 	for {
 		n, err := red.Read(vorbis[0:])
 		if err != nil {
-			//checkError(err) //eof
+			//utils.CheckError(err) //eof
 			break
 		}
 
@@ -136,7 +67,7 @@ func parseOGG(conn net.Conn, req *http.Request) {
 
 			//vorbis data packet
 			if bytes.Contains(vorbis[0:4], []byte("OggS")) {
-				packet := new(OggPacket)
+				packet := new(ogg.OggPacket)
 
 				//http://wiki.xiph.org/Ogg_Skeleton_4
 				//79 103 103 83  | 0-3 header
@@ -146,24 +77,24 @@ func parseOGG(conn net.Conn, req *http.Request) {
 				// 172 79 0 0 | 14-17 serial_number
 				// 241 0 0 0 | 18-21 sequence
 
-				(*packet).Version = varint32(vorbis[4:5])
-				(*packet).Header_type = varint32(vorbis[5:6])
-				(*packet).Granule_position = varint64(vorbis[6:14])
-				(*packet).Serial_number = varint32(vorbis[14:18])
-				(*packet).Sequence = varint32(vorbis[18:22])
-				(*packet).Crc = varint32(vorbis[22:26])
-				(*packet).Segments = varint32(vorbis[26:27])
+				(*packet).Version = ogg.Varint32(vorbis[4:5])
+				(*packet).Header_type = ogg.Varint32(vorbis[5:6])
+				(*packet).Granule_position = ogg.Varint64(vorbis[6:14])
+				(*packet).Serial_number = ogg.Varint32(vorbis[14:18])
+				(*packet).Sequence = ogg.Varint32(vorbis[18:22])
+				(*packet).Crc = ogg.Varint32(vorbis[22:26])
+				(*packet).Segments = ogg.Varint32(vorbis[26:27])
 
 				if packet.Header_type != 0 || alsoReadNext != 0 {
 
 					povezava, _ := povezave[req.URL.Path]
-					// clean nex handler
+					// utils.Clean nex handler
 					if alsoReadNext == 1 {
 						alsoReadNext = 0
 					}
 					if _DEBUGME {
 						pac, _ := json.MarshalIndent(packet, "", "    ")
-						log.Println("data", stringify(pac))
+						log.Println("data", utils.Stringify(pac))
 					}
 					ARTIST := bytes.Index(vorbis[0:], []byte("ARTIST="))
 					if _DEBUGME {
@@ -171,7 +102,7 @@ func parseOGG(conn net.Conn, req *http.Request) {
 					}
 
 					if ARTIST != -1 {
-						(povezava).Artist = clean(vorbis[ARTIST:])
+						(povezava).Artist = utils.Clean(vorbis[ARTIST:])
 						log.Print("ARTIST ", povezava.Artist)
 					}
 
@@ -181,7 +112,7 @@ func parseOGG(conn net.Conn, req *http.Request) {
 					}
 
 					if TITLE != -1 {
-						(povezava).Song = clean(vorbis[TITLE:])
+						(povezava).Song = utils.Clean(vorbis[TITLE:])
 						log.Print("TITLE ", povezava.Song)
 					}
 
@@ -208,7 +139,7 @@ func control_server_handle(conn net.Conn, basic_auth string) {
 		req, err := http.ReadRequest(bufio.NewReader(conn))
 		if err != nil {
 			conn.Write([]byte("HTTP/1.0 500 Error\r\n\r\n"))
-			checkError(err)
+			utils.CheckError(err)
 			break
 		}
 		if _DEBUGME {
@@ -244,7 +175,7 @@ func control_server_handle(conn net.Conn, basic_auth string) {
 			//icecast 1 update
 			parseOGG(conn, req)
 
-			//cleanup
+			//utils.Cleanup
 			delete(povezave, req.URL.Path)
 			break
 		} else if req.Method == "GET" && req.URL.Path == "/admin/metadata" {
@@ -267,10 +198,10 @@ func control_server(port string, basic_auth string) {
 	fmt.Println("icecast/shoutcast server running on port ", port)
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", port)
-	checkError(err)
+	utils.CheckError(err)
 
 	listener, err := net.ListenTCP("tcp", tcpAddr)
-	checkError(err)
+	utils.CheckError(err)
 
 	for {
 		conn, err := listener.Accept()
@@ -293,14 +224,7 @@ func info(res http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		fmt.Println("error:", err)
 	}
-	io.WriteString(res, stringify(klienti))
-}
-
-func basic_auth(user string, pass string) string {
-	encoded := &bytes.Buffer{}
-	encoder := base64.NewEncoder(base64.StdEncoding, encoded)
-	encoder.Write([]byte(user + ":" + pass))
-	return encoded.String()
+	io.WriteString(res, utils.Stringify(klienti))
 }
 
 func main() {
@@ -314,12 +238,13 @@ func main() {
 	flag.Parse()
 
 	//icecast server
-	go control_server(toIfPort(*server_port), basic_auth(*user, *password))
+	go control_server(utils.ToIfPort(*server_port), utils.Basic_auth(*user, *password))
 
 	//info server
 	http.HandleFunc("/info.json", info)
+	http.Handle("/", http.FileServer(http.Dir("web/public")))
 
-	go http.ListenAndServe(toIfPort(*info_port), nil)
+	go http.ListenAndServe(utils.ToIfPort(*info_port), nil)
 
 	// infinite loop; don't use for, this is not c
 	select {}
