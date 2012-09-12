@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"decoder/ogg"
 	"encoding/json"
 	"flag"
@@ -11,6 +10,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"runtime/pprof"
 	"strings"
 	"utils"
 )
@@ -22,11 +23,15 @@ type Audiocast struct {
 	Description string `json:"station-description"`
 	Audio       string `json:"station-info"`
 	Type        string `json:"content-type"`
+	stream      *bufio.ReadWriter
+}
+
+type Client struct {
 }
 
 //max 16 clients
 var povezave = make(map[string]Audiocast, 16)
-var _DEBUGME bool
+var klienti = make(map[net.Addr]Client, 16)
 
 //icecast2 update
 func parseMetadataUpdate(conn net.Conn, req *http.Request) {
@@ -34,7 +39,7 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 	mode := req.URL.Query().Get("mode")
 	mount := req.URL.Query().Get("mount")
 	song := req.URL.Query().Get("song")
-	if _DEBUGME {
+	if *_DEBUGME {
 		log.Println("mode", mode)
 		log.Println("mount", mount)
 		log.Println("song", song)
@@ -52,70 +57,42 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 
 //icecast1 update
 func parseOGG(conn net.Conn, req *http.Request) {
+
+	rd, bw := io.Pipe()
+
+	povezava, _ := povezave[req.URL.Path]
+	red := bufio.NewReaderSize(conn, 32*1024)
+
+	povezava.stream = bufio.NewReadWriter(bufio.NewReader(rd), bufio.NewWriter(bw))
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
-	red := bufio.NewReader(conn)
-	var vorbis [4096]byte
-	alsoReadNext := 0
+	povezave[req.URL.Path] = povezava
+	f, _ := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
 	for {
+		var vorbis [1024 * 16]byte
 		n, err := red.Read(vorbis[0:])
 		if err != nil {
-			//utils.CheckError(err) //eof
 			break
 		}
-
-		if n > 0 {
-			packet, error := ogg.NewOggpacket(vorbis[0:])
-
-			//vorbis data packet
-			if error == nil {
-
-				if packet.Header_type != 0 || alsoReadNext != 0 {
-
-					povezava, _ := povezave[req.URL.Path]
-					// utils.Clean nex handler
-					if alsoReadNext == 1 {
-						alsoReadNext = 0
-					}
-					if _DEBUGME {
-						pac, _ := json.MarshalIndent(packet, "", "    ")
-						log.Println("data", utils.Stringify(pac))
-					}
-					ARTIST := bytes.Index(vorbis[0:], []byte("ARTIST="))
-					if _DEBUGME {
-						log.Print("ARTIST ", ARTIST)
-					}
-
-					if ARTIST != -1 {
-						(povezava).Artist = utils.Clean(vorbis[ARTIST:])
-						log.Print("ARTIST ", povezava.Artist)
-					}
-
-					TITLE := bytes.Index(vorbis[0:], []byte("TITLE="))
-					if _DEBUGME {
-						log.Print("TITLE ", TITLE)
-					}
-
-					if TITLE != -1 {
-						(povezava).Song = utils.Clean(vorbis[TITLE:])
-						log.Print("TITLE ", povezava.Song)
-					}
-
-					// set next handler aka countionation of packet
-					if ARTIST > 4000 || packet.Segments == 255 || (packet.Header_type != 0 && TITLE == -1) {
-						alsoReadNext = 1
-					}
-					povezave[req.URL.Path] = povezava
-				}
-
+		// CALLING FOR REWRITE WITH CHANNELS
+		go func() {
+			f.Write(vorbis[0:n])
+			//povezava.stream.Write(vorbis[0:n])
+			packet, _ := ogg.NewOggpacket(vorbis[0:n], false)
+			if packet.Song != nil {
+				log.Println("packet", packet)
+				povezava.Artist = packet.Song.Artist
+				povezava.Song = packet.Song.Song
+				povezave[req.URL.Path] = povezava
 			}
-		}
+
+		}()
 	}
 }
 
 func control_server_handle(conn net.Conn, basic_auth string) {
 	povezava := new(Audiocast)
 
-	if _DEBUGME {
+	if *_DEBUGME {
 		log.Println("client", conn.RemoteAddr(), "connected")
 	}
 
@@ -126,10 +103,6 @@ func control_server_handle(conn net.Conn, basic_auth string) {
 			utils.CheckError(err)
 			break
 		}
-		if _DEBUGME {
-			log.Println("req", req)
-		}
-
 		//chech for authorization
 		auth := req.Header.Get("Authorization")
 		if len(auth) != 0 && len(basic_auth) > 1 {
@@ -171,7 +144,7 @@ func control_server_handle(conn net.Conn, basic_auth string) {
 		}
 
 	}
-	if _DEBUGME {
+	if *_DEBUGME {
 		log.Println("client", conn.RemoteAddr(), "disconnected")
 	}
 	conn.Close()
@@ -198,7 +171,40 @@ func control_server(port string, basic_auth string) {
 
 }
 
+func play(w http.ResponseWriter, req *http.Request) {
+
+	hj, ok := w.(http.Hijacker)
+
+	if !ok {
+		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
+		return
+	}
+
+	conn, _, hijack_err := hj.Hijack()
+	if hijack_err != nil {
+		conn.Write([]byte("HTTP/1.0 500 Error\r\n\r\n"))
+		conn.Close()
+		return
+	}
+
+	povezava, po_err := povezave["/traktor"]
+	log.Println("povezava", povezava)
+	log.Println("po_err", po_err)
+
+	if !po_err {
+		conn.Write([]byte("HTTP/1.0 4040 NOt Found\r\n\r\nStream doesn't exsist"))
+		conn.Close()
+		return
+	}
+
+	conn.Write([]byte("HTTP/1.0 200 OK\r\nContent-Type:application/ogg\r\n\r\n"))
+	io.Copy(conn, povezava.stream)
+	log.Println("povezava.stream.Available()", povezava.stream.Reader.Buffered())
+	conn.Close()
+	return
+}
 func info(res http.ResponseWriter, req *http.Request) {
+
 	res.Header().Set(
 		"Content-Type",
 		"application/json",
@@ -211,20 +217,24 @@ func info(res http.ResponseWriter, req *http.Request) {
 	io.WriteString(res, utils.Stringify(klienti))
 }
 
-func main() {
+var server_port = flag.Int("i", 8000, "icecast server port")
+var info_port = flag.Int("c", 3000, "web server port")
+var user = flag.String("u", "", "icecast server username")
+var password = flag.String("p", "", "icecast server password")
+var _DEBUGME = flag.Bool("d", false, "enable debugging")
 
-	//cli
-	var server_port = flag.Int("port", 8000, "icecast server port")
-	var info_port = flag.Int("web_port", 3000, "web server port")
-	var user = flag.String("username", "", "icecast server username")
-	var password = flag.String("password", "", "icecast server password")
-	flag.BoolVar(&_DEBUGME, "debug", false, "enable debugging")
-	flag.Parse()
+func main() {
+	f, err := os.Create("moj.prof")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pprof.StartCPUProfile(f)
 
 	//icecast server
 	go control_server(utils.ToIfPort(*server_port), utils.Basic_auth(*user, *password))
 
 	//info server
+	http.HandleFunc("/play/", play)
 	http.HandleFunc("/info.json", info)
 	http.Handle("/", http.FileServer(http.Dir("web/public")))
 
@@ -232,4 +242,5 @@ func main() {
 
 	// infinite loop; don't use for, this is not c
 	select {}
+	pprof.StopCPUProfile()
 }

@@ -1,4 +1,4 @@
-/* Built : 2012-09-04 11:38:11.577774 +0000 UTC */
+/* Built : 2012-09-12 12:43:06.059435 +0000 UTC */
 //-------------------------------------------------------------------
 // Auto generated code, but you are encouraged to modify it ☺
 // Manual: http://godag.googlecode.com
@@ -56,7 +56,7 @@ var targets = map[string]*Target{
 	"full": &Target{
 		desc:  "compile all packages (ignore !modified)",
 		first: func() { oldPkgFound = true },
-		last:  func() { println("hello world"); os.Exit(0) },
+		last:  func() { os.Exit(0) },
 	},
 }
 
@@ -109,18 +109,18 @@ func (s Say) Println(args ...interface{}) {
 //-------------------------------------------------------------------
 
 var (
-	compiler    = ""
+	compiler    = "gccgo"
 	linker      = ""
 	suffix      = ""
 	backend     = ""
 	root        = ""
 	output      = ""
 	match       = ""
-	help        = true
+	help        = false
 	list        = false
 	quiet       = false
 	external    = false
-	clean       = true
+	clean       = false
 	oldPkgFound = false
 )
 
@@ -678,6 +678,18 @@ func (p *Package) compile() {
 //-------------------------------------------------------------------
 
 var packages = []*Package{
+	&Package{
+		name:   "utils",
+		full:   "utils",
+		output: "_obj/utils",
+		files:  []string{"src/utils.go"},
+	},
+	&Package{
+		name:   "ogg",
+		full:   "decoder/ogg",
+		output: "_obj/decoder/ogg",
+		files:  []string{"src/decoder/ogg.go"},
+	},
 	&Package{
 		name:   "main",
 		full:   "main",
