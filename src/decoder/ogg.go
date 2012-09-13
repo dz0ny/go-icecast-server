@@ -77,12 +77,15 @@ func NewOggpacket(ogg []byte, skipCheck bool) (Packet, error) {
 	packet.Crc = Varint32(ogg[22:26])
 	packet.Segments = Varint32(ogg[26:27])
 
-	song := new(Meta)
-	parseForComments(ogg[0:], song)
+	if packet.Header_type != 0 {
 
-	if len(song.Artist) > 0 && len(song.Song) > 0 {
-		log.Println("song", song)
-		packet.Song = song
+		song := new(Meta)
+		parseForComments(ogg[0:], song)
+
+		if len(song.Artist) > 0 && len(song.Song) > 0 {
+			log.Println("song", song)
+			packet.Song = song
+		}
 	}
 
 	return *packet, nil
