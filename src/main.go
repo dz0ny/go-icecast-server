@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"decoder/ogg"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 type Audiocast struct {
 	Artist      string `json:"artist"`
 	Song        string `json:"song"`
+	Encoder     string `json:"encoder"`
 	Name        string `json:"station-name"`
 	Description string `json:"station-description"`
 	Audio       string `json:"station-info"`
@@ -25,9 +28,10 @@ type Audiocast struct {
 }
 
 type Client struct {
-	req          *http.Request
-	conn         *net.Conn
-	sent_packets uint64
+	req          http.Request
+	conn         net.Conn
+	sent_packets uint32
+	stream_end   chan int
 }
 
 //max 16 clients
@@ -59,32 +63,78 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 //icecast1 update
 func parseOGG(conn net.Conn, povezava *Audiocast) {
 
+	var oggPbefore bytes.Buffer
+
 	f, _ := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
 
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
 
 	for {
 		// CALLING FOR REWRITE WITH CHANNELS
+		var data [1024 * 16]byte
 
-		var vorbis [1024 * 16]byte
+		skip := oggPbefore.Len()
+		if skip > 0 {
+			oggPbefore.Read(data[0:])
+			oggPbefore.Reset()
+		}
 
-		n, err := conn.Read(vorbis[0:])
-
+		read, err := conn.Read(data[skip:])
 		if err != nil {
 			break
 		}
-
-		//go (*povezava).stream.Write(*gringo.NewPayload(vorbis[0:n]))
-
-		packet, _ := ogg.NewOggpacket(vorbis[0:n], false)
+		packet, _, next := ogg.NewOggpacket(data[0:read+skip], 0)
 		if packet.Info != nil {
 			(*povezava).Artist = packet.Info.Artist
 			(*povezava).Song = packet.Info.Song
+			(*povezava).Encoder = packet.Info.Encoder
 		}
 
-		f.Write(vorbis[0:n])
-	}
+		if next > 0 {
+			//pusti za naslednji paket
+			f.Write(data[0:next])
+			writeOggStreamToClients(data[0:next])
+			//shrani se ne prepozane pakete
+			oggPbefore.Write(data[next : read+skip])
+		} else {
+			//zapisivse
+			f.Write(data[0 : read+skip])
+			writeOggStreamToClients(data[0 : read+skip])
+		}
 
+	}
+	return
+}
+
+func bos(data *[]byte) {
+
+	//fix header_type_flag 5-6
+	(*data)[5] = 2
+	fix_packet(data, 0)
+
+}
+
+func fix_packet(data *[]byte, pn uint32) {
+
+	//fix page_sequence_no 18-22
+	var page_sequence_no = make([]byte, 4)
+	binary.LittleEndian.PutUint32(page_sequence_no, pn)
+	copy((*data)[18:23], page_sequence_no)
+
+}
+
+func writeOggStreamToClients(data []byte) {
+	for pov, klient := range klienti {
+		if klient.sent_packets == 0 {
+			bos(&data)
+		} else {
+			fix_packet(&data, klient.sent_packets)
+		}
+
+		klient.conn.Write(data[0:])
+		klient.sent_packets++
+		klienti[pov] = klient
+	}
 }
 
 func control_server_handle(conn net.Conn, basic_auth string) {
@@ -171,6 +221,7 @@ func control_server(port string, basic_auth string) {
 }
 
 func play(w http.ResponseWriter, req *http.Request) {
+	povezava := new(Client)
 
 	hj, ok := w.(http.Hijacker)
 
@@ -186,37 +237,29 @@ func play(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	povezava, po_err := povezave["/traktor"]
-	log.Println("povezava", povezava)
-	log.Println("po_err", po_err)
+	povezava.req = *req
+	povezava.conn = conn
+	povezava.sent_packets = 0
+	povezava.stream_end = make(chan int)
+	klienti[conn.RemoteAddr()] = *povezava
+	stream, stream_exists := povezave["/mixx"]
+	log.Println("stream", stream)
+	log.Println("stream_exists", stream_exists)
 
-	if !po_err {
-		conn.Write([]byte("HTTP/1.0 4040 NOt Found\r\n\r\nStream doesn't exsist"))
+	if !stream_exists {
+		conn.Write([]byte("HTTP/1.0 4040 Not Found\r\n\r\nStream doesn't exist"))
 		conn.Close()
 		return
 	}
 
+	//introduce me
 	conn.Write([]byte("HTTP/1.0 200 OK\r\nContent-Type:application/ogg\r\n\r\n"))
-	f, err := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
-	if err != nil {
-		log.Fatal(err)
-		conn.Close()
-		return
-	}
 
-	for {
-		var vorbis [1024 * 4]byte
-
-		n, err := f.Read(vorbis[0:])
-
-		if err != nil || n < 1 {
-			break
-		}
-
-		conn.Write(vorbis[0:])
-
-	}
+	//blocking channel
+	<-povezava.stream_end
+	log.Println("prekini", conn.RemoteAddr())
 	conn.Close()
+	delete(klienti, conn.RemoteAddr())
 	return
 }
 func info(res http.ResponseWriter, req *http.Request) {
