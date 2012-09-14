@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"gringo"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"runtime/pprof"
 	"strings"
 	"utils"
 )
@@ -24,18 +22,17 @@ type Audiocast struct {
 	Description string `json:"station-description"`
 	Audio       string `json:"station-info"`
 	Type        string `json:"content-type"`
-	stream      *gringo.Gringo
-	playing     chan int
-	page        uint64
 }
 
 type Client struct {
-	req *http.Request
+	req          *http.Request
+	conn         *net.Conn
+	sent_packets uint64
 }
 
 //max 16 clients
 var povezave = make(map[string]Audiocast, 16)
-var klienti = make(map[net.Addr]Client, 16)
+var klienti = make(map[net.Addr]Client, 128)
 
 //icecast2 update
 func parseMetadataUpdate(conn net.Conn, req *http.Request) {
@@ -62,9 +59,6 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 //icecast1 update
 func parseOGG(conn net.Conn, povezava *Audiocast) {
 
-	(*povezava).stream = gringo.NewGringo()
-	(*povezava).playing = make(chan int)
-
 	f, _ := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
 
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
@@ -83,14 +77,14 @@ func parseOGG(conn net.Conn, povezava *Audiocast) {
 		//go (*povezava).stream.Write(*gringo.NewPayload(vorbis[0:n]))
 
 		packet, _ := ogg.NewOggpacket(vorbis[0:n], false)
-		if packet.Song != nil {
-			(*povezava).Artist = packet.Song.Artist
-			(*povezava).Song = packet.Song.Song
+		if packet.Info != nil {
+			(*povezava).Artist = packet.Info.Artist
+			(*povezava).Song = packet.Info.Song
 		}
 
 		f.Write(vorbis[0:n])
 	}
-	(*povezava).playing <- 0
+
 }
 
 func control_server_handle(conn net.Conn, basic_auth string) {
@@ -136,7 +130,7 @@ func control_server_handle(conn net.Conn, basic_auth string) {
 
 			//icecast 1 update
 			parseOGG(conn, povezava)
-			pprof.StopCPUProfile()
+
 			//utils.Cleanup
 			delete(povezave, req.URL.Path)
 			break
@@ -203,9 +197,24 @@ func play(w http.ResponseWriter, req *http.Request) {
 	}
 
 	conn.Write([]byte("HTTP/1.0 200 OK\r\nContent-Type:application/ogg\r\n\r\n"))
+	f, err := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
+	if err != nil {
+		log.Fatal(err)
+		conn.Close()
+		return
+	}
+
 	for {
-		var rez gringo.Payload = povezava.stream.Read()
-		conn.Write(rez.Value())
+		var vorbis [1024 * 4]byte
+
+		n, err := f.Read(vorbis[0:])
+
+		if err != nil || n < 1 {
+			break
+		}
+
+		conn.Write(vorbis[0:])
+
 	}
 	conn.Close()
 	return
@@ -231,11 +240,6 @@ var password = flag.String("p", "", "icecast server password")
 var _DEBUGME = flag.Bool("d", false, "enable debugging")
 
 func main() {
-	f, err := os.OpenFile("moj.prof", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
-	if err != nil {
-		log.Fatal(err)
-	}
-	pprof.StartCPUProfile(f)
 
 	//icecast server
 	go control_server(utils.ToIfPort(*server_port), utils.Basic_auth(*user, *password))

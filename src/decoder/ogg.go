@@ -11,16 +11,17 @@ const (
 	OggHeader = "OggS"
 )
 
-//ogg v1 packet structure
+//ogg v1 packet structure see http://xiph.org/ogg/doc/framing.html
 type Packet struct {
-	Version          uint32
-	Header_type      uint32
-	Granule_position uint64
-	Sequence         uint32
-	Serial_number    uint32
-	Crc              uint32
-	Segments         uint32
-	Song             *Meta
+	stream_structure_version  uint32
+	header_type_flag          uint32
+	absolute_granule_position uint64
+	stream_serial_number      uint32
+	page_sequence_no          uint32
+	page_checksum             uint32
+	page_segments             uint32
+	segment_table             uint32
+	Info                      *Meta
 }
 
 type Meta struct {
@@ -61,34 +62,31 @@ func NewOggpacket(ogg []byte, skipCheck bool) (Packet, error) {
 		}
 	}
 
-	//http://wiki.xiph.org/Ogg_Skeleton_4
-	//79 103 103 83  | 0-3 header
-	// 0 | 4-5 version
-	// 4 | 5-6 type
-	// 0 48 42 0 - 0 0 0 0 | 6-13 granule
-	// 172 79 0 0 | 14-17 serial_number
-	// 241 0 0 0 | 18-21 sequence
+	packet.stream_structure_version = Varint32(ogg[4:5])
+	packet.header_type_flag = Varint32(ogg[5:6])
+	packet.absolute_granule_position = Varint64(ogg[6:14])
+	packet.stream_serial_number = Varint32(ogg[14:18])
+	packet.page_sequence_no = Varint32(ogg[18:22])
+	packet.page_checksum = Varint32(ogg[22:26])
+	packet.page_segments = Varint32(ogg[26:27])
 
-	packet.Version = Varint32(ogg[4:5])
-	packet.Header_type = Varint32(ogg[5:6])
-	packet.Granule_position = Varint64(ogg[6:14])
-	packet.Serial_number = Varint32(ogg[14:18])
-	packet.Sequence = Varint32(ogg[18:22])
-	packet.Crc = Varint32(ogg[22:26])
-	packet.Segments = Varint32(ogg[26:27])
+	if packet.header_type_flag != 0 {
 
-	if packet.Header_type != 0 {
+		meta := new(Meta)
+		parseForComments(ogg[27:], meta)
 
-		song := new(Meta)
-		parseForComments(ogg[0:], song)
-
-		if len(song.Artist) > 0 && len(song.Song) > 0 {
-			log.Println("song", song)
-			packet.Song = song
+		if len(meta.Artist) > 0 && len(meta.Song) > 0 {
+			log.Println("song", meta)
+			packet.Info = meta
 		}
 	}
 
 	return *packet, nil
+}
+
+// Fix page header based on sent packets
+func UpdatePageSequence(data []byte) (packet []byte) {
+	return data
 }
 
 // convert []bytes to uint32
