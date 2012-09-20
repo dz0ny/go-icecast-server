@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"log"
 	"utils"
 )
 
@@ -35,24 +34,17 @@ func parseForComments(data []byte, meta *Meta) {
 	ARTIST := bytes.Index(data[0:], []byte("ARTIST="))
 	if ARTIST != -1 {
 		meta.Artist = utils.Clean(data[ARTIST:])
-	} else {
-		meta.Artist = ""
 	}
 
 	TITLE := bytes.Index(data[0:], []byte("TITLE="))
 	if TITLE != -1 {
 		meta.Song = utils.Clean(data[TITLE:])
-	} else {
-		meta.Song = ""
 	}
 
 	ENCODER := bytes.Index(data[0:], []byte("ENCODER="))
 	if ENCODER != -1 {
 		meta.Encoder = utils.Clean(data[ENCODER:])
-	} else {
-		meta.Encoder = ""
 	}
-
 }
 
 func FindOgg(data []byte) int {
@@ -60,18 +52,13 @@ func FindOgg(data []byte) int {
 }
 
 //returns new parsed ogg packet or err if it's not ogg packet
-func NewOggpacket(ogg []byte, startAddress int) (Packet, error, int) {
-	packet := new(Packet)
-	var headerLoc int
+func NewOggpacket(ogg []byte, moreToRead *int) (Packet, error) {
 
-	if startAddress > 0 {
-		headerLoc = startAddress
-	} else {
-		headerLoc = FindOgg(ogg[0:])
-	}
+	headerLoc := FindOgg(ogg[*moreToRead:])
+	packet := new(Packet)
 
 	if headerLoc == -1 {
-		return *packet, errors.New("Missing ogg header in bitstream"), -1
+		return *packet, errors.New("Missing ogg header in bitstream")
 	}
 
 	packet.Stream_structure_version = uint8(ogg[headerLoc+4])
@@ -81,19 +68,13 @@ func NewOggpacket(ogg []byte, startAddress int) (Packet, error, int) {
 	packet.Page_sequence_no = Varint32(ogg[headerLoc+18 : 22+headerLoc])
 	packet.Page_checksum = Varint32(ogg[headerLoc+22 : 26+headerLoc])
 	packet.Page_segments = uint8(ogg[headerLoc+26])
-
-	if packet.Header_type_flag != 0 {
-
-		meta := new(Meta)
-		parseForComments(ogg[27:], meta)
-
-		if len(meta.Artist) > 0 && len(meta.Song) > 0 {
-			log.Println("song", meta)
-			packet.Info = meta
-		}
+	meta := new(Meta)
+	parseForComments(ogg[27:], meta)
+	if len(meta.Artist) > 0 || len(meta.Song) > 0 {
+		packet.Info = meta
 	}
-
-	return *packet, nil, headerLoc
+	*moreToRead = FindOgg(ogg[headerLoc+27:])
+	return *packet, nil
 }
 
 // convert []bytes to uint32
