@@ -95,10 +95,6 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 	mount := req.URL.Query().Get("mount")
 	song := req.URL.Query().Get("song")
 
-	log.Println("mode", mode)
-	log.Println("mount", mount)
-	log.Println("song", song)
-
 	if povezava, ok := povezave[mount]; mode == "updinfo" && ok && len(song) > 0 && strings.Contains(song, "-") {
 		s := strings.Split(song, " - ")
 		io.WriteString(conn, "HTTP/1.0 200 OK\r\n\r\nUpdated")
@@ -114,6 +110,7 @@ func parseMetadataUpdate(conn net.Conn, req *http.Request) {
 func parseIcecast(conn net.Conn, req *http.Request) {
 
 	povezava := new(Audiocast)
+	stream := req.URL.Path[1:]
 	//check for streams limit
 	if len(povezave) >= 16 {
 		io.WriteString(conn, "HTTP/1.0 405 Too many streams\r\n\r\nToo many streams")
@@ -124,7 +121,7 @@ func parseIcecast(conn net.Conn, req *http.Request) {
 	povezava.Name = req.Header.Get("Ice-Name")
 	povezava.Description = req.Header.Get("Ice-Description")
 	povezava.Audio = req.Header.Get("Ice-Audio-Info")
-	povezave[req.URL.Path] = *povezava
+	povezave[stream] = *povezava
 
 	//icecast 1 update
 	io.WriteString(conn, "HTTP/1.0 200 OK\r\n\r\n")
@@ -158,14 +155,15 @@ func parseIcecast(conn net.Conn, req *http.Request) {
 
 				povezava.Encoder = packet.Info.Encoder
 				log.Println("InfoPacket", povezava)
-				povezave[req.URL.Path] = *povezava
+				povezave[stream] = *povezava
 
 				//update all web hooks
 				for _, hook_url := range povezava.WebHooks {
 					update := new(url.Values)
 					update.Add("artist", povezava.Artist)
 					update.Add("song", povezava.Song)
-					http.PostForm(hook_url, *update)
+					status, err := http.PostForm(hook_url, *update)
+					log.Println(status, err)
 				}
 
 			}
@@ -186,15 +184,16 @@ func RegisterHook(res http.ResponseWriter, req *http.Request) {
 
 	hook_string := req.FormValue("callback")
 
-	povezava, err := povezave[stream]
-	if !err && hook_string != "" {
+	povezava, ok := povezave[stream]
 
-		stored := append(povezava.WebHooks, hook_string)
+	if ok && hook_string != "" {
 
-		log.Println("stored", stored)
-		io.WriteString(res, "OK subscribed hook to stream")
+		povezava.WebHooks = append(povezava.WebHooks, hook_string)
+		povezave[stream] = povezava
+
+		io.WriteString(res, "OK subscribed: "+hook_string+" to "+stream)
 	} else {
-		io.WriteString(res, "FAILED subscribe hook to stream")
+		io.WriteString(res, "FAILED subscribe: "+hook_string+" to "+stream)
 	}
 	return
 }

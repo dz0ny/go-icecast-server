@@ -23,6 +23,7 @@ func main() {
 
 	//info server
 	mux := routes.New()
+	mux.Logging = false
 	mux.Post("/hook/:stream", icecast.RegisterHook)
 	mux.Get("/info.json", icecast.DisplayInfo)
 
