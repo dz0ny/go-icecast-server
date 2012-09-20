@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"decoder/ogg"
-	"encoding/binary"
+	//"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,7 +12,8 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
+	//"os"
+	"runtime"
 	"strings"
 	"utils"
 )
@@ -28,7 +29,7 @@ type Audiocast struct {
 }
 
 type Client struct {
-	req          http.Request
+	req          *http.Request
 	conn         net.Conn
 	sent_packets uint32
 	stream_end   chan int
@@ -65,15 +66,16 @@ func parseOGG(conn net.Conn, povezava *Audiocast) {
 
 	var oggPbefore bytes.Buffer
 
-	f, _ := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
+	//f, _ := os.OpenFile("test.ogg", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
 
 	conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
 
 	for {
-		// CALLING FOR REWRITE WITH CHANNELS
-		var data [1024 * 16]byte
+		// CALLS FOR REWRITE WITH CHANNELS
+		var data [1024 * 64]byte
 
 		skip := oggPbefore.Len()
+
 		if skip > 0 {
 			oggPbefore.Read(data[0:])
 			oggPbefore.Reset()
@@ -83,57 +85,71 @@ func parseOGG(conn net.Conn, povezava *Audiocast) {
 		if err != nil {
 			break
 		}
-		packet, _, next := ogg.NewOggpacket(data[0:read+skip], 0)
+
+		packet, _, oggStart := ogg.NewOggpacket(data[0:read+skip], -1)
+		log.Println("packet.Page_segments", packet.Page_segments)
+		log.Println("packet.Stream_serial_number", packet.Stream_serial_number)
 		if packet.Info != nil {
+
 			(*povezava).Artist = packet.Info.Artist
 			(*povezava).Song = packet.Info.Song
 			(*povezava).Encoder = packet.Info.Encoder
 		}
 
-		if next > 0 {
-			//pusti za naslednji paket
-			f.Write(data[0:next])
-			writeOggStreamToClients(data[0:next])
-			//shrani se ne prepozane pakete
-			oggPbefore.Write(data[next : read+skip])
+		if packet.Stream_serial_number > 0 {
+			//f.Write(data[0 : read+skip])
+			writeOggStreamToClients(data[0:read+skip], oggStart)
 		} else {
-			//zapisivse
-			f.Write(data[0 : read+skip])
-			writeOggStreamToClients(data[0 : read+skip])
+			//send next time
+			oggPbefore.Write(data[0 : read+skip])
 		}
 
 	}
 	return
 }
 
-func bos(data *[]byte) {
+func writeOggStreamToClients(data []byte, ogg_header_location int) {
 
-	//fix header_type_flag 5-6
-	(*data)[5] = 2
-	fix_packet(data, 0)
-
-}
-
-func fix_packet(data *[]byte, pn uint32) {
-
-	//fix page_sequence_no 18-22
-	var page_sequence_no = make([]byte, 4)
-	binary.LittleEndian.PutUint32(page_sequence_no, pn)
-	copy((*data)[18:23], page_sequence_no)
-
-}
-
-func writeOggStreamToClients(data []byte) {
 	for pov, klient := range klienti {
-		if klient.sent_packets == 0 {
-			bos(&data)
+		/*		if klient.sent_packets == 1 {
+					var bos = []byte{
+						0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00,
+						0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86, 0xf2,
+						0x6e, 0x39, 0x00, 0x00, 0x00, 0x00, 0xc9, 0xc7,
+						0xdd, 0x30, 0x01, 0x1e, 0x01, 0x76, 0x6f, 0x72,
+						0x62, 0x69, 0x73, 0x00, 0x00, 0x00, 0x00, 0x02,
+						0x44, 0xac, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+						0x00, 0xee, 0x02, 0x00, 0xff, 0xff, 0xff, 0xff,
+						0xb8, 0x01}
+					klient.conn.Write(bos[0:])
+				}
+
+				for {
+
+					if ogg_header_location != -1 {
+						log.Println("ogg_header_location", ogg_header_location)
+
+						var page_sequence_no = make([]byte, 4)
+						binary.LittleEndian.PutUint32(page_sequence_no, klient.sent_packets)
+						log.Println(klient.sent_packets)
+						copy((data)[18+ogg_header_location:22+ogg_header_location], page_sequence_no)
+
+						//find another header
+						ogg_header_location = ogg.FindOgg(data[ogg_header_location+28:])
+						//update
+						klient.sent_packets++
+					} else {
+						break
+					}
+				}*/
+
+		_, err := klient.conn.Write(data[0:])
+		if err != nil {
+			klient.stream_end <- 1
 		} else {
-			fix_packet(&data, klient.sent_packets)
+			klienti[pov] = klient
 		}
 
-		klient.conn.Write(data[0:])
-		klient.sent_packets++
-		klienti[pov] = klient
 	}
 }
 
@@ -237,10 +253,10 @@ func play(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	povezava.req = *req
-	povezava.conn = conn
-	povezava.sent_packets = 0
-	povezava.stream_end = make(chan int)
+	(*povezava).req = req
+	(*povezava).conn = conn
+	(*povezava).sent_packets = 1
+	(*povezava).stream_end = make(chan int)
 	klienti[conn.RemoteAddr()] = *povezava
 	stream, stream_exists := povezave["/mixx"]
 	log.Println("stream", stream)
@@ -258,7 +274,7 @@ func play(w http.ResponseWriter, req *http.Request) {
 	//blocking channel
 	<-povezava.stream_end
 	log.Println("prekini", conn.RemoteAddr())
-	conn.Close()
+	defer conn.Close()
 	delete(klienti, conn.RemoteAddr())
 	return
 }
@@ -283,8 +299,12 @@ var password = flag.String("p", "", "icecast server password")
 var _DEBUGME = flag.Bool("d", false, "enable debugging")
 
 func main() {
-
-	//icecast server
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	/*	log.Println(bos)
+		log.Println(bos[0:28])
+		packet, _, oggStart := ogg.NewOggpacket(bos[0:], -1)
+		log.Println(packet)
+		log.Println(oggStart)*/
 	go control_server(utils.ToIfPort(*server_port), utils.Basic_auth(*user, *password))
 
 	//info server
